@@ -79,7 +79,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js";
     import {
-      getFirestore, collection, doc, setDoc, getDoc, onSnapshot, runTransaction, query, orderBy, limit, getDocs, deleteField
+      getFirestore, collection, doc, setDoc, getDoc, onSnapshot, runTransaction, query, orderBy, limit, getDocs, deleteField, deleteDoc
     } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
 
     // ---------- PASTE YOUR FIREBASE CONFIG BELOW ----------
@@ -349,10 +349,33 @@
           });
         });
         
-        // After successful transaction, compute top
+        // After successful transaction, compute top and clean up
         await computeAndSetTopOnce();
+        await cleanupZeroVoteProposals();
       } catch (err) {
         console.error('Timer expiry handling failed:', err);
+      }
+    }
+
+    // Delete proposals with zero votes
+    async function cleanupZeroVoteProposals() {
+      try {
+        const allProposals = await getDocs(proposalsCol);
+        const deletePromises = [];
+        
+        allProposals.forEach(docSnap => {
+          const data = docSnap.data();
+          if ((data.votes || 0) === 0) {
+            deletePromises.push(deleteDoc(doc(proposalsCol, docSnap.id)));
+          }
+        });
+        
+        if (deletePromises.length > 0) {
+          await Promise.all(deletePromises);
+          console.log(`Cleaned up ${deletePromises.length} proposals with zero votes`);
+        }
+      } catch (err) {
+        console.error('Cleanup failed:', err);
       }
     }
 
