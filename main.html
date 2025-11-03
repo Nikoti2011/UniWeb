@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Live Audience Iframe (Demo)</title>
+  <style>
+    :root{--bg:#0f1724;--panel:#0b1220;--accent:#7c3aed;--muted:#9aa4b2;color-scheme:dark}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial;color:#e6eef6;background:linear-gradient(180deg,#071127 0%, #071827 100%)}
+    .wrap{display:grid;grid-template-columns:320px 1fr;gap:18px;height:100vh;padding:18px}
+    .panel{background:rgba(255,255,255,0.03);padding:14px;border-radius:12px;box-shadow:0 6px 24px rgba(2,6,23,0.6);overflow:auto}
+    header{display:flex;gap:12px;align-items:center;margin-bottom:12px}
+    header h1{font-size:16px;margin:0}
+    .propose{display:flex;gap:8px;margin-bottom:12px}
+    input[type=text]{flex:1;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
+    button{background:var(--accent);border:none;padding:8px 10px;border-radius:8px;color:white;cursor:pointer}
+    .list{display:flex;flex-direction:column;gap:8px}
+    .item{display:flex;justify-content:space-between;gap:8px;padding:8px;border-radius:8px;background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);align-items:center}
+    .meta{font-size:12px;color:var(--muted)}
+    .votes{display:flex;gap:6px;align-items:center}
+    .iframewrap{display:flex;flex-direction:column;align-items:stretch}
+    iframe{flex:1;border-radius:12px;border:0;min-height:200px}
+    .toolbar{display:flex;gap:8px;align-items:center;padding:12px;margin-bottom:8px}
+    .small{font-size:12px;color:var(--muted)}
+    .notice{font-size:13px;color:var(--muted);margin-top:8px}
+    @media (max-width:880px){.wrap{grid-template-columns:1fr;grid-template-rows:auto 1fr;height:100vh}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <header>
+        <div style="width:44px;height:44px;border-radius:10px;background:linear-gradient(180deg,var(--accent),#4f46e5)"></div>
+        <div>
+          <h1>Audience Control</h1>
+          <div class="small">Propose URLs and vote. Top URL shows to everyone.</div>
+        </div>
+      </header>
+
+      <div class="propose">
+        <input id="urlInput" type="text" placeholder="https://example.com or just example.com" />
+        <button id="proposeBtn">Propose</button>
+      </div>
+
+      <div class="toolbar">
+        <div class="small">Connected: <span id="status">—</span></div>
+        <div style="flex:1"></div>
+        <button id="forceRefresh" title="Reload iframe for everyone">Force iframe reload</button>
+      </div>
+
+      <div class="list" id="proposalsList"></div>
+
+      <div class="notice">Note: many sites disallow embedding (X-Frame-Options or CSP). Use sites that allow iframes or host mirrored content.</div>
+    </div>
+
+    <div class="iframewrap panel">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+        <div style="flex:1">
+          <div class="small">Current URL</div>
+          <div id="currentUrlText" style="word-break:break-all"></div>
+        </div>
+        <div>
+          <button id="openDirect">Open in new tab</button>
+        </div>
+      </div>
+
+      <iframe id="viewer" srcdoc="<p style=\"font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100%\">Waiting for URL...</p>"></iframe>
+    </div>
+  </div>
+
+  <!-- Firebase (Realtime Database) - using CDN compat for simplicity -->
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+  <script>
+    /*************************************************************************
+     *  INSTRUCTIONS
+     *  1) Create a Firebase project at https://console.firebase.google.com/
+     *  2) Create a Realtime Database (not Firestore) and put it in test mode for quick demo.
+     *  3) Replace firebaseConfig below with your project's config. Then open this file.
+     *  4) Production: tighten DB rules and consider server-side validation.
+     *************************************************************************/
+
+    // --- PASTE YOUR FIREBASE CONFIG HERE ---
+    const firebaseConfig = {
+      apiKey: "PASTE_API_KEY",
+      authDomain: "PASTE_PROJECT.firebaseapp.com",
+      databaseURL: "https://PASTE_PROJECT.firebaseio.com",
+      projectId: "PASTE_PROJECT",
+      storageBucket: "PASTE_PROJECT.appspot.com",
+      messagingSenderId: "SENDER_ID",
+      appId: "APP_ID"
+    };
+
+    if (!firebaseConfig.apiKey || firebaseConfig.apiKey === 'PASTE_API_KEY') {
+      document.getElementById('status').textContent = 'Please add Firebase config in the HTML';
+      // stop here for safety
+    }
+
+    // initialize
+    const app = firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    // client id (keeps vote identity per browser)
+    let clientId = localStorage.getItem('audience_client_id');
+    if (!clientId) {
+      clientId = 'c_' + Math.random().toString(36).slice(2,10);
+      localStorage.setItem('audience_client_id', clientId);
+    }
+
+    const refs = {
+      proposals: db.ref('proposals'),
+      votes: db.ref('votes'),
+      current: db.ref('currentUrl'),
+      control: db.ref('control')
+    };
+
+    const ui = {
+      urlInput: document.getElementById('urlInput'),
+      proposeBtn: document.getElementById('proposeBtn'),
+      proposalsList: document.getElementById('proposalsList'),
+      viewer: document.getElementById('viewer'),
+      currentUrlText: document.getElementById('currentUrlText'),
+      status: document.getElementById('status'),
+      openDirect: document.getElementById('openDirect'),
+      forceRefresh: document.getElementById('forceRefresh')
+    };
+
+    ui.status.textContent = 'connecting...';
+
+    // helpers
+    function normalizeUrl(raw) {
+      if (!raw) return '';
+      raw = raw.trim();
+      if (!/^[a-zA-Z]+:\/\//.test(raw)) raw = 'https://' + raw;
+      try{ const u = new URL(raw); return u.href; } catch(e){ return '' }
+    }
+
+    function renderProposals(proposals, votesSnapshot) {
+      ui.proposalsList.innerHTML = '';
+      const arr = Object.entries(proposals || {}).map(([id,p])=>({id,...p}));
+      // compute votes count
+      arr.forEach(p=>{
+        const votesFor = votesSnapshot && votesSnapshot[p.id] ? Object.keys(votesSnapshot[p.id]).length : 0;
+        p.votes = votesFor;
+      });
+      // sort by votes desc then timestamp
+      arr.sort((a,b)=> (b.votes - a.votes) || (a.ts - b.ts));
+
+      arr.forEach(item=>{
+        const el = document.createElement('div'); el.className='item';
+        const left = document.createElement('div');
+        left.style.flex='1';
+        left.innerHTML = `<div style="font-weight:600">${item.title || item.url}</div><div class='meta'>${item.url}</div>`;
+        const votes = document.createElement('div'); votes.className='votes';
+        const up = document.createElement('button'); up.textContent='▲';
+        const count = document.createElement('div'); count.textContent=item.votes||0; count.className='meta';
+        up.onclick = ()=> toggleVote(item.id, true);
+        const down = document.createElement('button'); down.textContent='▼';
+        down.onclick = ()=> toggleVote(item.id, false);
+        const openBtn = document.createElement('button'); openBtn.textContent='Open'; openBtn.onclick = ()=> window.open(item.url,'_blank');
+        votes.appendChild(up); votes.appendChild(count); votes.appendChild(down); votes.appendChild(openBtn);
+        el.appendChild(left); el.appendChild(votes);
+        ui.proposalsList.appendChild(el);
+      });
+    }
+
+    // propose
+    ui.proposeBtn.onclick = ()=>{
+      const raw = ui.urlInput.value;
+      const url = normalizeUrl(raw);
+      if(!url){ alert('Invalid URL'); return; }
+      const id = refs.proposals.push().key;
+      const payload = {url, title: url.replace(/^https?:\/\//,''), ts: Date.now(), author: clientId};
+      refs.proposals.child(id).set(payload)
+        .then(()=> { ui.urlInput.value=''; })
+        .catch(err=> alert('Failed to propose: '+err.message));
+    };
+
+    // toggleVote creates/removes a node at votes/{proposalId}/{clientId}
+    function toggleVote(proposalId, up=true){
+      const voteRef = refs.votes.child(proposalId).child(clientId);
+      if (up){
+        voteRef.set(true);
+      } else {
+        voteRef.remove();
+      }
+    }
+
+    // listen for proposals and votes
+    let latestProposals = {};
+    let latestVotes = {};
+
+    refs.proposals.on('value', snap => {
+      latestProposals = snap.val() || {};
+      renderProposals(latestProposals, latestVotes);
+      computeAndSetTop();
+    });
+
+    refs.votes.on('value', snap => {
+      latestVotes = snap.val() || {};
+      renderProposals(latestProposals, latestVotes);
+      computeAndSetTop();
+    });
+
+    // compute top URL and write to current
+    let lastSet = null;
+    function computeAndSetTop(){
+      const arr = Object.entries(latestProposals || {}).map(([id,p])=>{
+        const votesFor = latestVotes && latestVotes[id] ? Object.keys(latestVotes[id]).length : 0;
+        return {id, url:p.url, ts:p.ts, votes:votesFor};
+      });
+      if (arr.length===0) return;
+      arr.sort((a,b)=> (b.votes - a.votes) || (a.ts - b.ts));
+      const top = arr[0];
+      if (top.url !== lastSet){
+        lastSet = top.url;
+        refs.current.set({url: top.url, ts: Date.now(), source: top.id}).catch(()=>{});
+      }
+    }
+
+    // listen to currentUrl
+    refs.current.on('value', snap=>{
+      const cur = snap.val();
+      if(!cur || !cur.url) return;
+      ui.currentUrlText.textContent = cur.url;
+      // load into iframe — note: many sites block embedding
+      ui.viewer.src = cur.url;
+    });
+
+    // control channel for actions like force reload
+    ui.forceRefresh.onclick = ()=>{
+      refs.control.set({action:'reload', ts:Date.now(), actor:clientId});
+    };
+
+    refs.control.on('value', snap=>{
+      const c = snap.val();
+      if(!c) return;
+      if (c.action === 'reload'){
+        // simple reload of iframe to force everyone to refresh the frame
+        const cur = ui.viewer.src;
+        ui.viewer.src = 'about:blank';
+        setTimeout(()=> ui.viewer.src = cur, 200);
+      }
+    });
+
+    // open direct
+    ui.openDirect.onclick = ()=>{
+      const cur = ui.currentUrlText.textContent;
+      if (cur) window.open(cur,'_blank');
+    };
+
+    // connection monitoring
+    window.addEventListener('online', ()=> ui.status.textContent='online');
+    window.addEventListener('offline', ()=> ui.status.textContent='offline');
+    ui.status.textContent = navigator.onLine ? 'online' : 'offline';
+
+    // Basic DB rules suggestion (do NOT use in production):
+    // {
+    //   "rules": {
+    //     ".read": true,
+    //     ".write": true
+    //   }
+    // }
+    // Production: require authentication and server-side checks.
+
+  </script>
+</body>
+</html>
