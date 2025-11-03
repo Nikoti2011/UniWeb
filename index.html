@@ -367,28 +367,47 @@
     // Load initial current URL immediately
     async function loadCurrentUrl() {
       try {
+        console.log('Loading initial URL from Firebase...');
         const snap = await getDoc(globalDoc);
+        console.log('Snapshot exists:', snap.exists());
         if (snap.exists()) {
           const data = snap.data();
+          console.log('Global doc data:', data);
           if (data && data.url) {
+            console.log('Setting URL to:', data.url);
             ui.currentUrlText.textContent = data.url;
             ui.viewer.src = data.url;
+            showFeedback('URL loaded from Firebase');
+          } else {
+            console.log('No URL in data');
+            showFeedback('No URL set in Firebase');
           }
+        } else {
+          console.log('Global document does not exist');
+          showFeedback('No current URL in database');
         }
       } catch (err) {
         console.error('Failed to load initial URL:', err);
+        showFeedback('Failed to load URL: ' + err.message);
       }
     }
     loadCurrentUrl();
 
     // listen to global/current updates to change iframe
     onSnapshot(globalDoc, snap => {
+      console.log('Global doc snapshot received');
       const data = snap.data();
-      if (!data || !data.url) return;
+      console.log('Snapshot data:', data);
+      if (!data || !data.url) {
+        console.log('No data or URL in snapshot');
+        return;
+      }
+      console.log('Updating iframe to:', data.url);
       ui.currentUrlText.textContent = data.url;
       ui.viewer.src = data.url;
     }, err => {
       console.error('Global doc snapshot error:', err);
+      showFeedback('Connection error: ' + err.message);
     });
 
     // force refresh control
