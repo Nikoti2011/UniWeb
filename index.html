@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Live Audience Iframe</title>
+  <title>Live Audience Iframe (Firestore)</title>
   <style>
     :root{--bg:#0f1724;--panel:#0b1220;--accent:#7c3aed;--muted:#9aa4b2;color-scheme:dark}
     html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial;color:#e6eef6;background:linear-gradient(180deg,#071127 0%, #071827 100%)}
@@ -13,9 +13,12 @@
     header h1{font-size:16px;margin:0}
     .propose{display:flex;gap:8px;margin-bottom:12px}
     input[type=text]{flex:1;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
-    button{background:var(--accent);border:none;padding:8px 10px;border-radius:8px;color:white;cursor:pointer}
+    button{background:var(--accent);border:none;padding:8px 10px;border-radius:8px;color:white;cursor:pointer;transition:opacity 0.2s}
+    button:disabled{opacity:0.5;cursor:not-allowed}
+    button:hover:not(:disabled){opacity:0.9}
     .list{display:flex;flex-direction:column;gap:8px}
     .item{display:flex;justify-content:space-between;gap:8px;padding:8px;border-radius:8px;background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);align-items:center}
+    .item.voted{background:linear-gradient(180deg, rgba(124,58,237,0.15), transparent)}
     .meta{font-size:12px;color:var(--muted)}
     .votes{display:flex;gap:6px;align-items:center}
     .iframewrap{display:flex;flex-direction:column;align-items:stretch}
@@ -23,6 +26,8 @@
     .toolbar{display:flex;gap:8px;align-items:center;padding:12px;margin-bottom:8px}
     .small{font-size:12px;color:var(--muted)}
     .notice{font-size:13px;color:var(--muted);margin-top:8px}
+    .feedback{position:fixed;bottom:20px;right:20px;background:rgba(124,58,237,0.9);padding:12px 16px;border-radius:8px;font-size:14px;opacity:0;transition:opacity 0.3s;pointer-events:none}
+    .feedback.show{opacity:1}
     @media (max-width:880px){.wrap{grid-template-columns:1fr;grid-template-rows:auto 1fr;height:100vh}}
   </style>
 </head>
@@ -33,24 +38,24 @@
         <div style="width:44px;height:44px;border-radius:10px;background:linear-gradient(180deg,var(--accent),#4f46e5)"></div>
         <div>
           <h1>Audience Control</h1>
-          <div class="small">Propose URLs and vote. Top URL shows to everyone.</div>
+          <div class="small">Propose URLs and vote. Top URL shows to everyone every 5 minutes.</div>
         </div>
       </header>
 
       <div class="propose">
-        <input id="urlInput" type="text" placeholder="https://example.com or just example.com" />
+        <input id="urlInput" type="text" placeholder="https://example.com or example.com or youtube.com/watch?v=..." />
         <button id="proposeBtn">Propose</button>
       </div>
 
       <div class="toolbar">
-        <div class="small">Connected: <span id="status">—</span></div>
+        <div class="small">Status: <span id="status">—</span></div>
         <div style="flex:1"></div>
         <button id="forceRefresh" title="Reload iframe for everyone">Force iframe reload</button>
       </div>
 
       <div class="list" id="proposalsList"></div>
 
-      <div class="notice">Note: some sites (like YouTube or Google) block embedding. Use embeddable links or supported sources.</div>
+      <div class="notice">Note: some sites block embedding. YouTube watch links are auto-converted to embed links.</div>
     </div>
 
     <div class="iframewrap panel">
@@ -58,6 +63,7 @@
         <div style="flex:1">
           <div class="small">Current URL</div>
           <div id="currentUrlText" style="word-break:break-all"></div>
+          <div class="small" style="margin-top:6px">Top now: <span id="topTitle">—</span></div>
         </div>
         <div>
           <button id="openDirect">Open in new tab</button>
@@ -67,191 +73,354 @@
     </div>
   </div>
 
-  <!-- Firebase SDK v8 -->
-  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+  <div id="feedback" class="feedback"></div>
 
-  <script>
+  <!-- Firestore modular SDK -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js";
+    import {
+      getFirestore, collection, doc, setDoc, getDoc, onSnapshot, runTransaction, query, orderBy, limit, getDocs, deleteField
+    } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
+
+    // ---------- PASTE YOUR FIREBASE CONFIG BELOW ----------
     const firebaseConfig = {
-      apiKey: "YOUR_API_KEY",
-      authDomain: "YOUR_PROJECT.firebaseapp.com",
-      databaseURL: "https://YOUR_PROJECT.firebaseio.com",
-      projectId: "YOUR_PROJECT",
-      storageBucket: "YOUR_PROJECT.appspot.com",
-      messagingSenderId: "SENDER_ID",
-      appId: "APP_ID"
+      apiKey: "AIzaSyCbnDrkeP9k09Pl9Fj8ghMrhMdxyAz9Zbc",
+      authDomain: "uniweb-nikoti.firebaseapp.com",
+      projectId: "uniweb-nikoti",
+      storageBucket: "uniweb-nikoti.firebasestorage.app",
+      messagingSenderId: "844735132477",
+      appId: "1:844735132477:web:24113f831619aecbb28b54"
     };
+    // -----------------------------------------------------
 
-    const app = firebase.initializeApp(firebaseConfig);
-    const db = firebase.database();
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
 
-    const clientId = localStorage.getItem('audience_client_id') || (() => {
-      const id = 'c_' + Math.random().toString(36).slice(2,10);
-      localStorage.setItem('audience_client_id', id);
-      return id;
-    })();
-
-    const refs = {
-      proposals: db.ref('proposals'),
-      votes: db.ref('votes'),
-      current: db.ref('currentUrl'),
-      control: db.ref('control'),
-      timer: db.ref('timer')
-    };
-
+    // ui refs
     const ui = {
       urlInput: document.getElementById('urlInput'),
       proposeBtn: document.getElementById('proposeBtn'),
       proposalsList: document.getElementById('proposalsList'),
       viewer: document.getElementById('viewer'),
       currentUrlText: document.getElementById('currentUrlText'),
+      topTitle: document.getElementById('topTitle'),
       status: document.getElementById('status'),
       openDirect: document.getElementById('openDirect'),
-      forceRefresh: document.getElementById('forceRefresh')
+      forceRefresh: document.getElementById('forceRefresh'),
+      feedback: document.getElementById('feedback')
     };
 
-    ui.status.textContent = 'online';
+    // client id stored locally
+    let clientId = localStorage.getItem('audience_client_id');
+    if (!clientId) {
+      clientId = 'c_' + Math.random().toString(36).slice(2,10);
+      localStorage.setItem('audience_client_id', clientId);
+    }
 
-    // Normalize URLs (adds https:// and converts YouTube to embed)
+    // feedback toast
+    function showFeedback(msg) {
+      ui.feedback.textContent = msg;
+      ui.feedback.classList.add('show');
+      setTimeout(() => ui.feedback.classList.remove('show'), 2000);
+    }
+
+    // helpers
     function normalizeUrl(raw) {
       if (!raw) return '';
       raw = raw.trim();
       if (!/^[a-zA-Z]+:\/\//.test(raw)) raw = 'https://' + raw;
       try {
         const u = new URL(raw);
-        if (u.hostname.includes('youtube.com') && u.searchParams.get('v')) {
-          const id = u.searchParams.get('v');
-          return `https://www.youtube.com/embed/${id}`;
+        // youtube watch -> embed
+        if ((u.hostname.includes('youtube.com') || u.hostname.includes('youtu.be'))) {
+          // youtu.be short link
+          if (u.hostname.includes('youtu.be')) {
+            const id = u.pathname.slice(1);
+            if (id) return `https://www.youtube.com/embed/${id}`;
+          }
+          // youtube.com/watch?v=...
+          const v = u.searchParams.get('v');
+          if (v) return `https://www.youtube.com/embed/${v}`;
         }
         return u.href;
       } catch (e) { return ''; }
     }
 
-    // Voting logic (toggle)
-    function toggleVote(proposalId) {
-      const voteRef = refs.votes.child(proposalId).child(clientId);
-      voteRef.once('value', snap => {
-        if (snap.exists()) voteRef.remove();
-        else voteRef.set(true);
-      });
-    }
+    // references
+    const proposalsCol = collection(db, 'proposals');
+    const globalDoc = doc(db, 'global', 'current');
+    const timerDoc = doc(db, 'global', 'timer');
+    const controlDoc = doc(db, 'global', 'control');
 
-    // Propose a new URL
-    ui.proposeBtn.onclick = () => {
+    ui.status.textContent = 'connected';
+
+    // propose
+    ui.proposeBtn.addEventListener('click', async () => {
       const raw = ui.urlInput.value;
       const url = normalizeUrl(raw);
-      if (!url) return alert('Invalid URL');
-      const id = refs.proposals.push().key;
-      refs.proposals.child(id).set({
-        url, title: url.replace(/^https?:\/\//,''), ts: Date.now(), author: clientId
-      });
-      ui.urlInput.value = '';
-    };
+      if (!url) {
+        showFeedback('Invalid URL');
+        return;
+      }
+      
+      ui.proposeBtn.disabled = true;
+      try {
+        const id = Math.random().toString(36).slice(2,10);
+        await setDoc(doc(proposalsCol, id), {
+          url,
+          title: url.replace(/^https?:\/\//,''),
+          votes: 0,
+          voters: {},
+          ts: Date.now(),
+          author: clientId
+        });
+        ui.urlInput.value = '';
+        showFeedback('URL proposed!');
+      } catch (err) {
+        console.error('Propose failed:', err);
+        showFeedback('Failed to propose URL');
+      } finally {
+        ui.proposeBtn.disabled = false;
+      }
+    });
 
-    // Render proposals
-    function renderProposals(proposals, votesSnapshot) {
+    // store current proposals for vote tracking
+    let currentProposals = [];
+
+    // render helper
+    function renderList(items) {
+      currentProposals = items;
       ui.proposalsList.innerHTML = '';
-      const arr = Object.entries(proposals || {}).map(([id, p]) => ({
-        id, ...p, votes: votesSnapshot?.[id] ? Object.keys(votesSnapshot[id]).length : 0
-      }));
-      arr.sort((a, b) => (b.votes - a.votes) || (a.ts - b.ts));
-
-      arr.forEach(item => {
+      items.forEach(item => {
         const el = document.createElement('div');
         el.className = 'item';
+        const hasVoted = item.voters && item.voters[clientId];
+        if (hasVoted) el.classList.add('voted');
+        
         const left = document.createElement('div');
         left.style.flex = '1';
         left.innerHTML = `<div style="font-weight:600">${item.title}</div><div class='meta'>${item.url}</div>`;
         const votes = document.createElement('div');
         votes.className = 'votes';
-        const up = document.createElement('button'); up.textContent = '▲';
-        const count = document.createElement('div'); count.textContent = item.votes; count.className = 'meta';
+
+        const up = document.createElement('button');
+        up.textContent = hasVoted ? '▼' : '▲';
+        up.title = hasVoted ? 'Remove vote' : 'Vote';
         up.onclick = () => toggleVote(item.id);
-        const openBtn = document.createElement('button'); openBtn.textContent = 'Open'; openBtn.onclick = () => window.open(item.url, '_blank');
+
+        const count = document.createElement('div');
+        count.textContent = (item.votes || 0);
+        count.className = 'meta';
+        count.style.minWidth = '28px'; 
+        count.style.textAlign = 'center';
+
+        const openBtn = document.createElement('button');
+        openBtn.textContent = 'Open';
+        openBtn.onclick = () => window.open(item.url, '_blank');
+
         votes.append(up, count, openBtn);
         el.append(left, votes);
-        ui.proposalsList.append(el);
+        ui.proposalsList.appendChild(el);
       });
     }
 
-    let latestProposals = {};
-    let latestVotes = {};
-    refs.proposals.on('value', snap => {
-      latestProposals = snap.val() || {};
-      renderProposals(latestProposals, latestVotes);
-    });
-    refs.votes.on('value', snap => {
-      latestVotes = snap.val() || {};
-      renderProposals(latestProposals, latestVotes);
+    // listen proposals (realtime)
+    onSnapshot(proposalsCol, snaps => {
+      const arr = [];
+      snaps.forEach(docSnap => {
+        const d = docSnap.data();
+        arr.push({ id: docSnap.id, ...d });
+      });
+      // sort by votes desc then ts asc
+      arr.sort((a,b) => (b.votes - a.votes) || (a.ts - b.ts));
+      renderList(arr);
+      // update topTitle if exists
+      if (arr.length > 0) ui.topTitle.textContent = arr[0].title || arr[0].url;
+      else ui.topTitle.textContent = '—';
+    }, err => {
+      console.error('Proposals snapshot error:', err);
+      showFeedback('Connection error');
     });
 
-    // Compute top proposal
-    function computeTop() {
-      const arr = Object.entries(latestProposals || {}).map(([id, p]) => ({
-        id, url: p.url, votes: latestVotes?.[id] ? Object.keys(latestVotes[id]).length : 0, ts: p.ts
-      }));
-      arr.sort((a,b)=> (b.votes - a.votes) || (a.ts - b.ts));
-      return arr[0];
+    // toggleVote using a transaction: ensures one vote per user
+    async function toggleVote(proposalId) {
+      const pRef = doc(proposalsCol, proposalId);
+      try {
+        await runTransaction(db, async (tx) => {
+          const pSnap = await tx.get(pRef);
+          if (!pSnap.exists()) return;
+          const data = pSnap.data();
+          const voters = data.voters || {};
+          const has = !!voters[clientId];
+          if (has) {
+            // remove vote - properly delete the field
+            delete voters[clientId];
+            const newVotes = Math.max(0, (data.votes || 0) - 1);
+            tx.update(pRef, { voters, votes: newVotes });
+          } else {
+            // add vote
+            voters[clientId] = true;
+            const newVotes = (data.votes || 0) + 1;
+            tx.update(pRef, { voters, votes: newVotes });
+          }
+        });
+        showFeedback(currentProposals.find(p => p.id === proposalId)?.voters?.[clientId] ? 'Vote removed' : 'Vote added');
+      } catch (err) {
+        console.error('vote txn failed', err);
+        showFeedback('Vote failed');
+      }
     }
 
-    // Global 5-minute timer
-    const TIMER_INTERVAL = 5 * 60 * 1000;
-    function startTimerIfNeeded() {
-      refs.timer.once('value', snap => {
-        const val = snap.val();
-        const now = Date.now();
-        if (!val || now > val.nextSwitchTime) {
-          refs.timer.set({ nextSwitchTime: now + TIMER_INTERVAL });
+    // compute top and set global/current doc
+    async function computeAndSetTopOnce() {
+      try {
+        // query top 1 by votes
+        const q = query(proposalsCol, orderBy('votes','desc'), orderBy('ts','asc'), limit(1));
+        const snaps = await getDocs(q);
+        if (!snaps.empty) {
+          const top = snaps.docs[0].data();
+          await setDoc(globalDoc, { url: top.url, ts: Date.now(), source: snaps.docs[0].id }, { merge: true });
         }
-      });
+      } catch (err) {
+        console.error('Failed to compute top:', err);
+      }
+    }
+
+    // timer: shared single timer doc controlling next switch time
+    const TIMER_INTERVAL = 5 * 60 * 1000; // 5 minutes
+    let timerTimeout = null; // track timeout to clean up
+
+    async function startTimerIfNeeded() {
+      const tSnap = await getDoc(timerDoc);
+      const now = Date.now();
+      if (!tSnap.exists() || (tSnap.data().nextSwitchTime || 0) <= now) {
+        await setDoc(timerDoc, { nextSwitchTime: now + TIMER_INTERVAL, lastUpdate: now }, { merge: true });
+      }
     }
     startTimerIfNeeded();
 
-    refs.timer.on('value', snap => {
-      const val = snap.val();
-      if (!val) return;
-      updateCountdown(val.nextSwitchTime - Date.now());
-      const delay = val.nextSwitchTime - Date.now();
-      if (delay > 0) {
-        setTimeout(() => {
-          const top = computeTop();
-          if (top) refs.current.set({ url: top.url, ts: Date.now(), source: top.id });
-          refs.timer.set({ nextSwitchTime: Date.now() + TIMER_INTERVAL });
-        }, delay);
+    // react to timer changes
+    onSnapshot(timerDoc, snap => {
+      const data = snap.data();
+      if (!data) return;
+      
+      // Clear existing timeout to prevent memory leak
+      if (timerTimeout) {
+        clearTimeout(timerTimeout);
+        timerTimeout = null;
+      }
+      
+      const remaining = data.nextSwitchTime - Date.now();
+      updateCountdown(Math.max(0, remaining));
+      
+      // Only one client should update when timer expires
+      // We use a transaction to ensure atomic update
+      if (remaining > 0) {
+        timerTimeout = setTimeout(async () => {
+          await handleTimerExpiry();
+        }, remaining + 50);
+      } else {
+        // if already passed, immediate compute
+        handleTimerExpiry();
+      }
+    }, err => {
+      console.error('Timer snapshot error:', err);
+    });
+
+    // Handle timer expiry with transaction to prevent race conditions
+    async function handleTimerExpiry() {
+      try {
+        await runTransaction(db, async (tx) => {
+          const tSnap = await tx.get(timerDoc);
+          if (!tSnap.exists()) return;
+          
+          const data = tSnap.data();
+          const now = Date.now();
+          
+          // Check if timer has already been updated by another client
+          if (data.nextSwitchTime > now) {
+            return; // Another client already handled it
+          }
+          
+          // This client gets to update
+          tx.update(timerDoc, { 
+            nextSwitchTime: now + TIMER_INTERVAL,
+            lastUpdate: now 
+          });
+        });
+        
+        // After successful transaction, compute top
+        await computeAndSetTopOnce();
+      } catch (err) {
+        console.error('Timer expiry handling failed:', err);
+      }
+    }
+
+    // countdown UI
+    function updateCountdown(ms) {
+      const sec = Math.max(0, Math.floor(ms / 1000));
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      ui.status.textContent = `next update in ${m}:${s.toString().padStart(2,'0')}`;
+    }
+
+    // listen to global/current updates to change iframe
+    onSnapshot(globalDoc, snap => {
+      const data = snap.data();
+      if (!data || !data.url) return;
+      ui.currentUrlText.textContent = data.url;
+      ui.viewer.src = data.url;
+    }, err => {
+      console.error('Global doc snapshot error:', err);
+    });
+
+    // force refresh control
+    ui.forceRefresh.addEventListener('click', async () => {
+      ui.forceRefresh.disabled = true;
+      try {
+        await setDoc(controlDoc, { action: 'reload', ts: Date.now(), actor: clientId }, { merge: true });
+        showFeedback('Reload triggered');
+      } catch (err) {
+        console.error('Force refresh failed:', err);
+        showFeedback('Refresh failed');
+      } finally {
+        setTimeout(() => ui.forceRefresh.disabled = false, 1000);
       }
     });
 
-    function updateCountdown(ms) {
-      const sec = Math.max(0, Math.floor(ms/1000));
-      const min = Math.floor(sec/60);
-      const s = sec % 60;
-      ui.status.textContent = `next update in ${min}:${s.toString().padStart(2,'0')}`;
-    }
-
-    // Listen to current URL
-    refs.current.on('value', snap => {
-      const cur = snap.val();
-      if (!cur || !cur.url) return;
-      ui.currentUrlText.textContent = cur.url;
-      ui.viewer.src = cur.url;
-    });
-
-    ui.forceRefresh.onclick = () => {
-      refs.control.set({ action: 'reload', ts: Date.now(), actor: clientId });
-    };
-    refs.control.on('value', snap => {
-      const c = snap.val();
-      if (c?.action === 'reload') {
+    // react to control
+    let lastControlTs = 0;
+    onSnapshot(controlDoc, snap => {
+      const d = snap.data();
+      if (!d) return;
+      
+      // Prevent duplicate reloads
+      if (d.ts <= lastControlTs) return;
+      lastControlTs = d.ts;
+      
+      if (d.action === 'reload') {
         const cur = ui.viewer.src;
         ui.viewer.src = 'about:blank';
         setTimeout(() => ui.viewer.src = cur, 200);
       }
+    }, err => {
+      console.error('Control doc snapshot error:', err);
     });
 
-    ui.openDirect.onclick = () => {
+    // open direct
+    ui.openDirect.addEventListener('click', () => {
       const cur = ui.currentUrlText.textContent;
-      if (cur) window.open(cur,'_blank');
-    };
+      if (cur) window.open(cur, '_blank');
+    });
+
+    // Error handling
+    window.addEventListener('error', e => {
+      console.error('Global error:', e);
+    });
+
+    window.addEventListener('unhandledrejection', e => {
+      console.error('Unhandled promise rejection:', e.reason);
+    });
   </script>
 </body>
 </html>
