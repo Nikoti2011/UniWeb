@@ -364,6 +364,23 @@
       ui.status.textContent = `next update in ${m}:${s.toString().padStart(2,'0')}`;
     }
 
+    // Load initial current URL immediately
+    async function loadCurrentUrl() {
+      try {
+        const snap = await getDoc(globalDoc);
+        if (snap.exists()) {
+          const data = snap.data();
+          if (data && data.url) {
+            ui.currentUrlText.textContent = data.url;
+            ui.viewer.src = data.url;
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load initial URL:', err);
+      }
+    }
+    loadCurrentUrl();
+
     // listen to global/current updates to change iframe
     onSnapshot(globalDoc, snap => {
       const data = snap.data();
